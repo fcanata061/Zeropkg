@@ -1,136 +1,104 @@
 # Zeropkg/zeropkg1.0/modules/package.py
 import os
 import tarfile
-import hashlib
-import time
 import yaml
-from core import CONFIG, log, run_cmd
+import shutil
+from datetime import datetime
+from core import CONFIG, log
 from meta import MetaPackage
 from hooks import run_hooks
+from sandbox import run_in_sandbox
 
 
-def _hash_file(path):
-    """Calcula hash SHA256 de um arquivo."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
+def fake_install(meta: MetaPackage, build_dir: str, staging_dir: str):
+    """Instala o pacote em diretório fake (DESTDIR) dentro do sandbox."""
+    destdir = os.path.join(staging_dir, f"{meta.name}-{meta.version}")
+    os.makedirs(destdir, exist_ok=True)
+
+    log.info(f"📦 Instalando {meta.name} em staging (fakeroot)")
+    run_in_sandbox(f"make install DESTDIR={destdir}", cwd=build_dir, check=True)
+
+    return destdir
 
 
-def _generate_manifest(meta: MetaPackage, pkgroot: str, zpkg_path: str):
-    """Gera manifesto YAML com todos os arquivos instalados."""
+def create_package(meta: MetaPackage, staging_dir: str, destdir: str):
+    """Empacota o diretório fake em um .zpkg."""
+    out_file = os.path.join(staging_dir, f"{meta.name}-{meta.version}.zpkg")
+
+    log.info(f"📦 Criando pacote {out_file}")
+    with tarfile.open(out_file, "w:gz") as tar:
+        tar.add(destdir, arcname=os.path.basename(destdir))
+
+    return out_file
+
+
+def register_manifest(meta: MetaPackage, destdir: str):
+    """Registra manifesto com todos os arquivos instalados."""
+    manifest_dir = os.path.join(CONFIG["db_dir"], "installed")
+    os.makedirs(manifest_dir, exist_ok=True)
+
     files = []
-    for root, _, filenames in os.walk(pkgroot):
-        for fname in filenames:
-            fpath = os.path.join(root, fname)
-            relpath = os.path.relpath(fpath, pkgroot)
-            files.append({
-                "path": relpath,
-                "hash": _hash_file(fpath),
-                "size": os.path.getsize(fpath)
-            })
+    for root, _, filenames in os.walk(destdir):
+        for f in filenames:
+            fullpath = os.path.relpath(os.path.join(root, f), destdir)
+            files.append(fullpath)
 
     manifest = {
         "name": meta.name,
         "version": meta.version,
-        "build_system": meta.build_system,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "files": files,
-        "package_file": zpkg_path
+        "installed_at": datetime.utcnow().isoformat()
     }
 
-    db_dir = CONFIG["db_dir"]
-    os.makedirs(os.path.join(db_dir, "installed"), exist_ok=True)
-    manifest_path = os.path.join(db_dir, "installed", f"{meta.name}.yaml")
-    with open(manifest_path, "w") as f:
+    out_file = os.path.join(manifest_dir, f"{meta.name}.yaml")
+    with open(out_file, "w") as f:
         yaml.safe_dump(manifest, f)
 
-    log.info(f"📑 Manifesto salvo em {manifest_path}")
-    return manifest
+    log.success(f"✅ Manifesto registrado: {out_file}")
 
 
-def _create_zpkg(pkgroot: str, meta: MetaPackage):
-    """Compacta staging em pacote .zpkg."""
-    out_dir = CONFIG["packages_dir"]
-    os.makedirs(out_dir, exist_ok=True)
-    zpkg_path = os.path.join(out_dir, f"{meta.name}-{meta.version}.zpkg")
+def install(meta: MetaPackage, build_dir: str, staging_dir: str):
+    """Fluxo completo de instalação com hooks + sandbox + manifesto."""
+    log.info(f"🚀 Instalando {meta.name}-{meta.version}")
 
-    with tarfile.open(zpkg_path, "w:xz") as tar:
-        tar.add(pkgroot, arcname="")
+    run_hooks(meta.data.get("hooks", {}), "pre-install", cwd=build_dir)
 
-    log.success(f"📦 Pacote criado: {zpkg_path}")
-    return zpkg_path
+    destdir = fake_install(meta, build_dir, staging_dir)
+    pkg_file = create_package(meta, staging_dir, destdir)
+    register_manifest(meta, destdir)
 
+    run_hooks(meta.data.get("hooks", {}), "post-install", cwd=destdir)
 
-def install_package(meta: MetaPackage, install_dir: str):
-    """
-    Instala pacote com fluxo completo:
-    - hooks pre-install
-    - fakeroot install em staging
-    - hooks post-install
-    - empacota em .zpkg
-    - gera manifesto + log
-    - instala real
-    """
-    pkg_build_dir = os.path.join(CONFIG["build_dir"], f"{meta.name}-{meta.version}")
-    pkgroot = os.path.join(pkg_build_dir, "pkgroot")
-    os.makedirs(pkgroot, exist_ok=True)
-
-    # Hooks pre-install
-    run_hooks(meta.data.get("hooks", {}), "pre-install", cwd=pkg_build_dir)
-
-    # Instalação fake em staging
-    log.info(f"📦 Instalando {meta.name} em staging (fakeroot)")
-    run_cmd("make install DESTDIR=" + pkgroot, cwd=pkg_build_dir)
-
-    # Hooks post-install
-    run_hooks(meta.data.get("hooks", {}), "post-install", cwd=pkg_build_dir)
-
-    # Cria pacote
-    zpkg_path = _create_zpkg(pkgroot, meta)
-
-    # Gera manifesto
-    _generate_manifest(meta, pkgroot, zpkg_path)
-
-    # Instala real
-    log.info(f"📂 Extraindo {zpkg_path} para {install_dir}")
-    with tarfile.open(zpkg_path, "r:xz") as tar:
-        tar.extractall(install_dir)
-
-    log.success(f"✅ Pacote {meta.name}-{meta.version} instalado em {install_dir}")
+    log.success(f"🎉 {meta.name}-{meta.version} instalado com sucesso!")
+    return pkg_file
 
 
-def remove_package(pkg_name: str):
-    """
-    Remove pacote com base no manifesto:
-    - hooks pre-remove
-    - remove arquivos listados
-    - hooks post-remove
-    - limpa registro
-    """
-    manifest_path = os.path.join(CONFIG["db_dir"], "installed", f"{pkg_name}.yaml")
-    if not os.path.exists(manifest_path):
-        log.error(f"Manifesto do pacote {pkg_name} não encontrado")
-        return False
+def remove(meta_name: str):
+    """Remove um pacote baseado no manifesto, com hooks pre/post-remove."""
+    manifest_file = os.path.join(CONFIG["db_dir"], "installed", f"{meta_name}.yaml")
+    if not os.path.exists(manifest_file):
+        log.error(f"Manifesto de {meta_name} não encontrado!")
+        return
 
-    with open(manifest_path) as f:
+    with open(manifest_file) as f:
         manifest = yaml.safe_load(f)
 
     # Hooks pre-remove
-    run_hooks(manifest.get("hooks", {}), "pre-remove", cwd=CONFIG["install_dir"])
+    pkg_dir = CONFIG["install_dir"]
+    run_hooks({}, "pre-remove", cwd=pkg_dir)  # hooks podem ser carregados do meta original
 
-    # Remove arquivos
-    for entry in manifest["files"]:
-        fpath = os.path.join(CONFIG["install_dir"], entry["path"])
-        if os.path.exists(fpath):
-            os.remove(fpath)
-            log.debug(f"🗑️ Removido {fpath}")
+    # Remover arquivos
+    log.info(f"🗑️ Removendo {meta_name}")
+    for f in manifest["files"]:
+        try:
+            os.remove(os.path.join(pkg_dir, f))
+        except FileNotFoundError:
+            log.warn(f"Arquivo já ausente: {f}")
+
+    # Apagar manifesto
+    os.remove(manifest_file)
 
     # Hooks post-remove
-    run_hooks(manifest.get("hooks", {}), "post-remove", cwd=CONFIG["install_dir"])
+    run_hooks({}, "post-remove", cwd=pkg_dir)
 
-    # Remove manifesto
-    os.remove(manifest_path)
-    log.success(f"✅ Pacote {pkg_name} removido e registro apagado")
-    return True
+    log.success(f"✅ {meta_name} removido com sucesso!")
