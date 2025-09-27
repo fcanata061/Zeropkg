@@ -1,96 +1,126 @@
 # Zeropkg/zeropkg1.0/modules/commands.py
 import argparse
-import os
-
+import sys
 from core import log, CONFIG
-from fetch import download_file, extract_file
-from build import create_sandbox, clean_sandbox, apply_patches, build_package
-from package import install_package, remove_package, check_dependencies
-from system import list_installed, audit_system, notify
+from meta import load_meta
+from fetch import fetch_sources
+from build import build_package
+from package import install_package, remove_package
+from upgrade import upgrade_package, upgrade_all
+from sync import sync_repo, commit_changes
+from update_upstream import check_update, check_all
+from system import audit_all, list_installed
 
-
-def cmd_install(args):
-    pkg = args.name
-    url = args.url
-    patches = args.patches or []
-    build_system = args.build
-    prefix = CONFIG["install_dir"]
-
-    log.info(f"==> Instalando pacote {pkg}")
-
-    # 1. Baixar
-    src = download_file(url)
-
-    # 2. Extrair se for arquivo
-    sandbox = create_sandbox(pkg)
-    if os.path.isfile(src):
-        extract_file(src, sandbox)
-    else:
-        sandbox = src  # já é diretório (ex: git clone)
-
-    # 3. Aplicar patches
-    if patches:
-        apply_patches(sandbox, patches)
-
-    # 4. Build
-    build_package(sandbox, build_system, prefix)
-
-    # 5. Instalar
-    install_package(pkg, sandbox, prefix)
-
-    notify("Zeropkg", f"Pacote {pkg} instalado com sucesso.")
-
-
-def cmd_remove(args):
-    pkg = args.name
-    log.info(f"==> Removendo pacote {pkg}")
-    remove_package(pkg)
-    notify("Zeropkg", f"Pacote {pkg} removido.")
-
-
-def cmd_list(args):
-    list_installed()
-
-
-def cmd_audit(args):
-    audit_system()
-
-
-# ========================
-# CLI principal
-# ========================
 
 def main():
-    parser = argparse.ArgumentParser(prog="zeropkg", description="Zeropkg package manager")
-    sub = parser.add_subparsers(dest="command")
+    parser = argparse.ArgumentParser(
+        prog="zeropkg",
+        description="Zeropkg - Gerenciador de pacotes do zero 🚀"
+    )
 
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # ========================
     # install
-    p_install = sub.add_parser("install", help="Instalar um pacote")
-    p_install.add_argument("name", help="Nome do pacote")
-    p_install.add_argument("url", help="URL de origem (tar.gz, git, etc)")
-    p_install.add_argument("--build", default="autotools", help="Sistema de build (autotools, cargo, go, python, java, custom)")
-    p_install.add_argument("--patches", nargs="*", help="Lista de patches a aplicar")
-    p_install.set_defaults(func=cmd_install)
+    # ========================
+    p_install = sub.add_parser("install", help="Instalar pacote")
+    p_install.add_argument("meta", help="Arquivo meta.yaml do pacote")
 
+    # ========================
     # remove
-    p_remove = sub.add_parser("remove", help="Remover um pacote")
-    p_remove.add_argument("name", help="Nome do pacote")
-    p_remove.set_defaults(func=cmd_remove)
+    # ========================
+    p_remove = sub.add_parser("remove", help="Remover pacote")
+    p_remove.add_argument("name", help="Nome do pacote instalado")
 
-    # list
-    p_list = sub.add_parser("list", help="Listar pacotes instalados")
-    p_list.set_defaults(func=cmd_list)
+    # ========================
+    # build
+    # ========================
+    p_build = sub.add_parser("build", help="Compilar pacote")
+    p_build.add_argument("meta", help="Arquivo meta.yaml do pacote")
 
+    # ========================
+    # fetch
+    # ========================
+    p_fetch = sub.add_parser("fetch", help="Baixar fontes do pacote")
+    p_fetch.add_argument("meta", help="Arquivo meta.yaml do pacote")
+
+    # ========================
+    # upgrade
+    # ========================
+    p_upgrade = sub.add_parser("upgrade", help="Atualizar pacote")
+    p_upgrade.add_argument("meta", nargs="?", help="Arquivo meta.yaml (se vazio, todos)")
+
+    # ========================
+    # sync
+    # ========================
+    p_sync = sub.add_parser("sync", help="Sincronizar repositório Git")
+    p_commit = sub.add_parser("commit", help="Commitar mudanças no repo Git")
+    p_commit.add_argument("-m", "--message", default="Atualização Zeropkg", help="Mensagem do commit")
+
+    # ========================
+    # update-upstream
+    # ========================
+    p_upstream = sub.add_parser("update", help="Checar novas versões upstream")
+    p_upstream.add_argument("meta", nargs="?", help="Arquivo meta.yaml (se vazio, todos)")
+
+    # ========================
     # audit
-    p_audit = sub.add_parser("audit", help="Auditar sistema")
-    p_audit.set_defaults(func=cmd_audit)
+    # ========================
+    sub.add_parser("audit", help="Rodar auditoria completa")
+    sub.add_parser("list", help="Listar pacotes instalados")
 
     args = parser.parse_args()
-    if hasattr(args, "func"):
-        args.func(args)
-    else:
-        parser.print_help()
+
+    # ========================
+    # Execução
+    # ========================
+    if args.command == "install":
+        meta = load_meta(args.meta)
+        fetch_sources(meta, CONFIG["fetch_dir"])
+        build_package(meta, CONFIG["build_dir"])
+        install_package(meta, CONFIG["install_dir"])
+
+    elif args.command == "remove":
+        remove_package(args.name)
+
+    elif args.command == "build":
+        meta = load_meta(args.meta)
+        build_package(meta, CONFIG["build_dir"])
+
+    elif args.command == "fetch":
+        meta = load_meta(args.meta)
+        fetch_sources(meta, CONFIG["fetch_dir"])
+
+    elif args.command == "upgrade":
+        if args.meta:
+            upgrade_package(args.meta)
+        else:
+            # TODO: scan all meta.yaml no repo local
+            log.warn("Upgrade all ainda não implementado com scan automático")
+
+    elif args.command == "sync":
+        sync_repo()
+
+    elif args.command == "commit":
+        commit_changes(args.message)
+
+    elif args.command == "update":
+        if args.meta:
+            check_update(args.meta)
+        else:
+            # TODO: scan all meta.yaml no repo local
+            log.warn("Update all ainda não implementado com scan automático")
+
+    elif args.command == "audit":
+        audit_all()
+
+    elif args.command == "list":
+        list_installed()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log.error("Execução interrompida pelo usuário")
+        sys.exit(1)
