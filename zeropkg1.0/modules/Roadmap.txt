@@ -1,0 +1,231 @@
+# Zeropkg – Roadmap Completo
+
+Este documento combina a estrutura de diretórios, variáveis e organização do Zeropkg
+com os módulos agrupados em grandes áreas funcionais, inspirado no Portage (Gentoo) e no emerge.
+
+---
+
+## Estrutura de Diretórios
+
+/etc/zeropkg/               -> Configurações globais
+/usr/ports/zeropkg/         -> Repositório de metas (meta.yaml)
+/var/zeropkg/               -> Estado, banco de dados e logs
+/var/cache/zeropkg/         -> Downloads e pacotes compilados
+/var/tmp/zeropkg/           -> Diretório temporário de build
+/var/lib/zeropkg/           -> Metadados e registros de pacotes instalados
+/opt/zeropkg/               -> Sandboxes e toolchains
+
+---
+
+## Arquivo de Configuração
+
+/etc/zeropkg/config.yaml -> Arquivo de configuração global lido por todos os módulos.
+
+Exemplo:
+root: "/"
+eprefix: ""
+sysroot: "/opt/zeropkg/sandbox"
+distdir: "/var/cache/zeropkg/distfiles"
+pkgdir: "/var/cache/zeropkg/packages"
+workdir: "/var/tmp/zeropkg/build"
+logs_dir: "/var/log/zeropkg"
+repo_dir: "/usr/ports/zeropkg"
+notify: true
+fetchcmd: "curl -L -O"
+path_env: "/usr/local/bin:/usr/bin:/bin:/opt/zeropkg/toolchains/bin"
+
+---
+
+## Estrutura do Repositório (/usr/ports/zeropkg/)
+
+/usr/ports/zeropkg/
+├── sys-devel/
+│    ├── gcc/
+│    │    ├── gcc-13.2.0.meta.yaml
+│    │    ├── gcc-13.2.0-pass1.meta.yaml
+│    │    └── gcc-13.2.0-pass2.meta.yaml
+│    └── binutils/
+│         └── binutils-2.41.meta.yaml
+├── dev-lang/
+│    ├── python/
+│    │    ├── python-3.11.6.meta.yaml
+│    │    └── python-3.12.0.meta.yaml
+│    └── rust/
+│         └── rust-1.72.1.meta.yaml
+├── gnome/
+│    └── gnome-shell-45.meta.yaml
+└── kde/
+└── plasma-6.0.meta.yaml
+
+---
+
+## Exemplo de meta.yaml
+
+name: gcc
+version: 13.2.0
+source:
+
+* url: [https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz](https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz)
+* type: tar
+  patches:
+* gcc-13.2.0-fix.patch
+  build:
+  system: autotools
+  args: ["--enable-languages=c,c++", "--disable-multilib"]
+  dependencies:
+  build:
+
+  * binutils >=2.40
+    runtime:
+  * glibc >=2.38
+    hooks:
+    pre_build: "./scripts/check-env.sh"
+    post_install: "./scripts/test-suite.sh"
+
+---
+
+## Estrutura de Trabalho (/var/tmp/zeropkg/)
+
+/var/tmp/zeropkg/
+├── build/                -> Pasta de compilação
+│    └── gcc-13.2.0/
+│         ├── src/        -> Fonte extraído
+│         ├── patches/    -> Patches aplicados
+│         ├── work/       -> Arquivos intermediários
+│         └── fakeroot/   -> Instalação temporária
+└── sandbox/              -> Ambiente isolado de build
+
+---
+
+## Cache (/var/cache/zeropkg/)
+
+/var/cache/zeropkg/
+├── distfiles/            -> Arquivos baixados (tarballs, fontes, etc.)
+└── packages/             -> Pacotes empacotados prontos
+
+---
+
+## Banco de Dados (/var/lib/zeropkg/)
+
+/var/lib/zeropkg/
+├── db/                   -> Registro de pacotes instalados
+│    ├── gcc-13.2.0.yaml
+│    └── python-3.12.0.yaml
+└── toolchains/           -> Estado e versões de toolchains
+
+---
+
+## Logs (/var/log/zeropkg/)
+
+/var/log/zeropkg/
+├── gcc-13.2.0.log        -> Log completo da build
+├── zeropkg-install.log   -> Histórico global de instalações
+└── zeropkg-tail.log      -> Log em tempo real
+
+---
+
+## Variáveis do Zeropkg (equivalentes ao Portage)
+
+[Globais]
+$ROOT       -> raiz do sistema alvo (default: /)
+$EPREFIX    -> prefixo customizado (default: vazio)
+$SYSROOT    -> sandbox/toolchain (default: /opt/zeropkg/sandbox)
+
+[Fonte & Cache]
+$DISTDIR    -> diretório de downloads (/var/cache/zeropkg/distfiles)
+$PKGDIR     -> diretório de pacotes (/var/cache/zeropkg/packages)
+$FETCHCMD   -> comando de fetch (ex: wget, curl, git)
+
+[Build]
+$WORKDIR    -> diretório de build (/var/tmp/zeropkg/build/<pacote-versão>)
+$S          -> subdiretório da fonte extraída (/var/tmp/zeropkg/build/<pacote-versão>/src)
+$PATCHDIR   -> diretório de patches (/var/tmp/zeropkg/build/<pacote-versão>/patches)
+$T          -> diretório temporário de trabalho (/var/tmp/zeropkg/build/<pacote-versão>/work)
+$FILESDIR   -> diretório de arquivos auxiliares
+
+[Instalação]
+$D          -> diretório de instalação temporária (fakeroot)
+$ED         -> equivalente a $D$EPREFIX
+$DESTDIR    -> destino final de instalação (default: $ROOT/usr)
+
+[Metadados]
+$PORTDIR    -> repositório de metas (/usr/ports/zeropkg)
+$PKGNAME    -> nome do pacote (ex: gcc)
+$PV         -> versão do pacote (ex: 13.2.0)
+$PF         -> pacote + versão (ex: gcc-13.2.0)
+$CATEGORY   -> categoria do pacote (ex: sys-devel)
+$P          -> pacote + versão simplificado (ex: gcc-13.2.0)
+
+[Logs & Controle]
+$LOGDIR     -> diretório de logs (/var/log/zeropkg)
+$BUILD_LOG  -> log do pacote atual ($LOGDIR/$PF.log)
+$TAIL_LOG   -> log em tempo real ($LOGDIR/zeropkg-tail.log)
+
+---
+
+## Módulos Agrupados do Zeropkg
+
+1. Core (Núcleo)
+
+* Leitura do config.yaml
+* Inicialização de variáveis globais
+* Sistema de logs (colorido, realtime, histórico)
+* CLI (comandos, abreviações, dry-run, ask)
+
+2. Fetch & Source
+
+* Download de fontes (HTTP, HTTPS, FTP, Rsync, Git)
+* Verificação de checksum (md5sum, sha256)
+* Descompactação automática (tar, xz, gz, bz2, zip)
+* Aplicação de patches
+* Organização em $WORKDIR/src e $WORKDIR/patches
+
+3. Build System
+
+* Compilação (Autotools, Meson, Ninja, CMake, Cargo, Go, Python, custom scripts)
+* Hooks pré/pós build
+* Sandbox de compilação
+* Controle de dependências de build
+
+4. Install & Package
+
+* Instalação temporária ($WORKDIR/fakeroot)
+* Empacotamento Zeropkg
+* Instalação final ($ROOT/usr)
+* Hooks pré/pós instalação
+* Remoção de pacotes com dependências reversas
+* Suporte a múltiplas versões (slotting)
+
+5. Repository & Meta
+
+* Leitura de meta.yaml
+* Estrutura de repositório (/usr/ports/zeropkg)
+* Suporte a múltiplos repositórios e sync
+* Atualização/upgrade de pacotes
+* Banco de dados (/var/lib/zeropkg/db)
+
+6. Dependency Solver
+
+* Resolução topológica, reversa e profunda
+* Dependências separadas (build-time, runtime)
+* Suporte a versões específicas
+
+7. Toolchains & Runtimes
+
+* Gerenciamento de toolchains (GCC, Binutils, Glibc)
+* Suporte a múltiplas versões coexistindo
+* Gerenciamento de linguagens (Python, Rust, Java, Ruby)
+* Controle automático do $PATH via config.yaml
+
+8. System & Security
+
+* Varrimento do sistema para problemas
+* Correção de inconsistências
+* Verificação de vulnerabilidades
+* Integração futura com CVE feeds
+
+9. Maintenance & Utilities
+
+* Limpeza de diretórios (build, sandbox, logs antigos)
+* Reset/Bootstrap do sistema
+* Relatórios
