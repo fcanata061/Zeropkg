@@ -1,48 +1,56 @@
 # Zeropkg/zeropkg1.0/modules/upgrade.py
 import os
-from core import log, CONFIG
-from meta import load_meta
-from fetch import fetch_sources
+import yaml
+from core import CONFIG, log
+from meta import MetaPackage
+from fetch import fetch_source
 from build import build_package
-from package import install_package
+from package import install, remove
+from hooks import run_hooks
 
 
-def upgrade_package(meta_file: str):
+def load_installed_meta(pkg_name: str) -> dict:
+    """Carrega manifesto do pacote já instalado."""
+    manifest_file = os.path.join(CONFIG["db_dir"], "installed", f"{pkg_name}.yaml")
+    if not os.path.exists(manifest_file):
+        return None
+    with open(manifest_file) as f:
+        return yaml.safe_load(f)
+
+
+def upgrade(meta: MetaPackage, staging_dir: str, sources_dir: str, build_dir: str):
     """
-    Atualiza um pacote baseado no seu meta.yaml.
-    - Baixa fontes novamente
-    - Recompila
-    - Reinstala
+    Fluxo de upgrade:
+    - carrega versão instalada
+    - compara com nova versão
+    - executa hooks pre-upgrade
+    - roda ciclo fetch → build → install
+    - executa hooks post-upgrade
     """
-    log.info(f"⏫ Upgrade iniciado para {meta_file}")
+    installed = load_installed_meta(meta.name)
+    if installed:
+        old_version = installed["version"]
+        if old_version == meta.version:
+            log.info(f"{meta.name} já está na versão {meta.version}")
+            return
+        log.info(f"⬆️ Upgrade {meta.name}: {old_version} → {meta.version}")
+    else:
+        log.info(f"{meta.name} não estava instalado. Instalando novo.")
 
-    # 1. Carrega metadados
-    meta = load_meta(meta_file)
-    pkg_name = meta.name
-    pkg_version = meta.version
-    log.info(f"Atualizando pacote: {pkg_name} -> {pkg_version}")
+    # Hooks pre-upgrade
+    run_hooks(meta.data.get("hooks", {}), "pre-upgrade", cwd=build_dir)
 
-    # 2. Baixa fontes
-    fetch_dir = CONFIG["fetch_dir"]
-    fetch_sources(meta, fetch_dir)
+    # Fetch source
+    source_dir = fetch_source(meta, sources_dir)
 
-    # 3. Compila
-    build_dir = CONFIG["build_dir"]
-    build_package(meta, build_dir)
+    # Build
+    pkg_build_dir = build_package(meta, build_dir)
 
-    # 4. Instala
-    install_dir = CONFIG["install_dir"]
-    install_package(meta, install_dir)
+    # Install (vai sobrescrever a versão antiga)
+    pkg_file = install(meta, pkg_build_dir, staging_dir)
 
-    log.success(f"✅ Pacote {pkg_name} atualizado para versão {pkg_version}")
+    # Hooks post-upgrade
+    run_hooks(meta.data.get("hooks", {}), "post-upgrade", cwd=build_dir)
 
-
-def upgrade_all(meta_files: list):
-    """
-    Atualiza todos os pacotes listados em meta_files.
-    """
-    for mf in meta_files:
-        try:
-            upgrade_package(mf)
-        except Exception as e:
-            log.error(f"Falha ao atualizar {mf}: {e}")
+    log.success(f"✅ {meta.name} atualizado para {meta.version}")
+    return pkg_file
