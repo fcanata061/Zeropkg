@@ -1,15 +1,57 @@
 # Zeropkg - package.py
-# Evoluído com create_package, install_package e remove_package com hooks
+# Gerenciamento de pacotes: criação, instalação, remoção, listagem, info
+# Atualizado com suporte a hooks e empacotamento
 
 import os
 import tarfile
 import subprocess
+import yaml
 from core import CONFIG, log
 from meta import MetaPackage
 
 
+def list_packages(directory: str):
+    """Lista pacotes em um diretório (db/available ou db/installed)."""
+    if not os.path.isdir(directory):
+        return []
+    return [p.replace(".yaml", "") for p in os.listdir(directory) if p.endswith(".yaml")]
+
+
+def list_installed_packages():
+    """Lista pacotes instalados."""
+    db_dir = CONFIG.get("db_dir", "db")
+    installed_dir = os.path.join(db_dir, "installed")
+    return list_packages(installed_dir)
+
+
+def list_available_packages():
+    """Lista pacotes disponíveis para instalação."""
+    db_dir = CONFIG.get("db_dir", "db")
+    available_dir = os.path.join(db_dir, "available")
+    return list_packages(available_dir)
+
+
+def show_package_info(pkgname: str):
+    """Exibe informações de um pacote (meta YAML)."""
+    db_dir = CONFIG.get("db_dir", "db")
+    available_dir = os.path.join(db_dir, "available")
+    meta_file = os.path.join(available_dir, f"{pkgname}.yaml")
+
+    if not os.path.exists(meta_file):
+        log.warn(f"Pacote {pkgname} não encontrado no available.")
+        return None
+
+    data = yaml.safe_load(open(meta_file))
+    print(yaml.dump(data, sort_keys=False))
+    return data
+
+
+# -----------------------------
+# 🔥 Evoluções: Hooks e Empacotamento
+# -----------------------------
+
 def run_hooks(hook_type: str, meta: MetaPackage):
-    """Executa hooks pre/post-install/remove se existirem"""
+    """Executa hooks pre/post-install/remove se existirem."""
     hooks_dir = CONFIG.get("hooks_dir", "hooks")
     script = os.path.join(hooks_dir, f"{hook_type}-{meta.name}")
     if os.path.exists(script) and os.access(script, os.X_OK):
